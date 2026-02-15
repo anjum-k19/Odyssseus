@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from app.models import AnalyzeRequest, AnalyzeResponse, TextMetrics, MediaMetrics
 from app.services.url_normalizer import normalize_url
 from app.services.valkey_client import get_page, set_page
-from app.services.gemini_service import get_text_metrics, get_contributing_excerpts, rewrite_headline
+from app.services.gemini_service import get_text_metrics, get_contributing_excerpts, get_score_explanations, rewrite_headline
 from app.services.twelve_labs_service import get_video_metrics
 
 router = APIRouter()
@@ -44,6 +44,7 @@ def analyze(req: AnalyzeRequest):
             tm = record.get("text_metrics") or {}
             mm = record.get("media_metrics") or {}
             excerpts = record.get("contributing_excerpts") or {}
+            score_explanations = record.get("score_explanations") or {}
             logger.info("analyze CACHE HIT normalized=%r returning text_metrics=%s", normalized[:80], tm)
             return AnalyzeResponse(
                 normalized_url=normalized,
@@ -56,6 +57,7 @@ def analyze(req: AnalyzeRequest):
                 from_cache=True,
                 neutral_headline=record.get("neutral_headline", ""),
                 contributing_excerpts=excerpts,
+                score_explanations=score_explanations,
             )
         logger.info("analyze CACHE MISS (content changed) stored_hash=%s incoming_hash=%s", (stored_hash or "")[:16], incoming_hash[:16])
     else:
@@ -63,10 +65,12 @@ def analyze(req: AnalyzeRequest):
     text_metrics = get_text_metrics(req.text)
     logger.info("analyze text_metrics received humanity=%.1f integrity=%.1f rhetoric=%.1f", text_metrics.humanity, text_metrics.integrity, text_metrics.rhetoric)
     contributing_excerpts: dict[str, list[str]] = {}
+    score_explanations: dict[str, str] = {}
     if (
         text_metrics.humanity < 34 or text_metrics.integrity < 34 or text_metrics.rhetoric < 34
     ):
         contributing_excerpts = get_contributing_excerpts(req.text, text_metrics)
+        score_explanations = get_score_explanations(req.text, text_metrics)
     media_metrics_extra: dict = {}
     video_url = _first_video_url(req.media)
     if video_url:
@@ -89,6 +93,7 @@ def analyze(req: AnalyzeRequest):
         "media_metrics": media_metrics_extra,
         "neutral_headline": neutral_headline,
         "contributing_excerpts": contributing_excerpts,
+        "score_explanations": score_explanations,
     }
     set_page(normalized, page_record)
     logger.info("analyze persisted page_record keys=%s responding from_cache=False", list(page_record.keys()))
@@ -99,4 +104,5 @@ def analyze(req: AnalyzeRequest):
         from_cache=False,
         neutral_headline=neutral_headline,
         contributing_excerpts=contributing_excerpts,
+        score_explanations=score_explanations,
     )

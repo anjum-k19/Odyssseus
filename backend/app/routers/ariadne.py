@@ -1,4 +1,4 @@
-"""Ariadne: link graph / provenance."""
+"""Ariadne: link graph / provenance and claim substantiation."""
 import logging
 from urllib.parse import urlparse
 from fastapi import APIRouter, HTTPException
@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from app.models import AriadneRequest, AriadneResponse, AriadneNode, AriadneEdge
 from app.services.url_normalizer import normalize_url
 from app.services.valkey_client import get_ariadne, set_ariadne
-from app.services.gemini_service import classify_links
+from app.services.gemini_service import classify_links, substantiate_claims
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -21,8 +21,8 @@ def _domain(url: str) -> str:
 
 @router.post("/ariadne", response_model=AriadneResponse)
 def ariadne(req: AriadneRequest):
-    """Build link graph: classify links, return nodes + edges; cache by normalized URL."""
-    logger.info("ariadne received url=%r links_count=%s", req.url[:80] if req.url else "", len(req.links or []))
+    """Build link graph: classify links, return nodes + edges; if page_summary given, add substantiation."""
+    logger.info("ariadne received url=%r links_count=%s summary_len=%s", req.url[:80] if req.url else "", len(req.links or []), len(req.page_summary or ""))
     normalized = normalize_url(req.url)
     if not normalized:
         logger.warning("ariadne invalid URL -> 400")
@@ -38,13 +38,24 @@ def ariadne(req: AriadneRequest):
             edges=[AriadneEdge(**e) for e in cached.get("edges", [])],
             alerts=cached.get("alerts", []),
             from_cache=True,
+            substantiation_summary=cached.get("substantiation_summary", ""),
         )
     logger.info("ariadne CACHE MISS calling classify_links")
     classified = classify_links(req.url, links)
-    nodes = [AriadneNode(id=normalized, label=_domain(normalized), type="page")]
+    substantiation_summary = ""
+    link_notes: dict[str, str] = {}
+    if (req.page_summary or "").strip():
+        substantiation_summary, link_notes = substantiate_claims(req.url, req.page_summary, classified)
+    nodes = [AriadneNode(id=normalized, label=_domain(normalized), type="page", note="")]
     for c in classified:
+        url = c.get("url", "")
         nodes.append(
-            AriadneNode(id=c["url"], label=c.get("label", c["url"]), type=c.get("type", "unknown"))
+            AriadneNode(
+                id=url,
+                label=c.get("label", c.get("url", url)),
+                type=c.get("type", "unknown"),
+                note=link_notes.get(url, ""),
+            )
         )
     edges = [AriadneEdge(source=normalized, target=c["url"]) for c in classified]
     alerts = []
@@ -56,13 +67,15 @@ def ariadne(req: AriadneRequest):
         "edges": [e.model_dump() for e in edges],
         "alerts": alerts,
         "links_count": len(links),
+        "substantiation_summary": substantiation_summary,
     }
     set_ariadne(normalized, graph)
-    logger.info("ariadne built graph nodes=%s edges=%s alerts=%s", len(nodes), len(edges), len(alerts))
+    logger.info("ariadne built graph nodes=%s edges=%s substantiation_len=%s", len(nodes), len(edges), len(substantiation_summary))
     return AriadneResponse(
         normalized_url=normalized,
         nodes=nodes,
         edges=edges,
         alerts=alerts,
         from_cache=False,
+        substantiation_summary=substantiation_summary,
     )

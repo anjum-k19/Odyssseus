@@ -63,10 +63,17 @@ function extractLinks(): string[] {
   return urls;
 }
 
-const fetchAriadne = (pageUrl: string, linkList: string[]) =>
+const fetchAriadne = (
+  pageUrl: string,
+  linkList: string[],
+  pageSummary?: string
+) =>
   new Promise<AriadneResponse>((resolve, reject) => {
     chrome.runtime.sendMessage(
-      { type: "ARIADNE_FETCH", payload: { url: pageUrl, links: linkList } },
+      {
+        type: "ARIADNE_FETCH",
+        payload: { url: pageUrl, links: linkList, page_summary: pageSummary ?? "" },
+      },
       (res: { ok: boolean; data?: AriadneResponse; error?: string } | undefined) => {
         if (res?.ok && res.data) resolve(res.data as AriadneResponse);
         else reject(new Error(res?.error || "Ariadne failed"));
@@ -74,27 +81,66 @@ const fetchAriadne = (pageUrl: string, linkList: string[]) =>
     );
   });
 
+function makeFetchChat(pageText: string, sessionId: string): (message: string) => Promise<string> {
+  return (message: string) =>
+    new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        { type: "CHAT_FETCH", payload: { page_text: pageText, message, session_id: sessionId } },
+        (res: { ok?: boolean; data?: { reply?: string }; error?: string } | undefined) => {
+          if (res?.ok && res.data?.reply != null) resolve(res.data.reply);
+          else reject(new Error(res?.error || "Chat failed"));
+        }
+      );
+    });
+}
+
+function makeFetchChorus(): (
+  url: string,
+  topicOrSummary: string
+) => Promise<{ label: string; url: string; perspective: string }[]> {
+  return (url: string, topicOrSummary: string) =>
+    new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        { type: "CHORUS_FETCH", payload: { url, topic_or_summary: topicOrSummary } },
+        (res: { ok?: boolean; data?: { alternatives?: { label: string; url: string; perspective: string }[] }; error?: string } | undefined) => {
+          if (res?.ok && res.data?.alternatives) resolve(res.data.alternatives);
+          else reject(new Error(res?.error || "Chorus failed"));
+        }
+      );
+    });
+}
+
 function renderOverlay(
   root: ReturnType<typeof createRoot>,
   opts: {
     loading: boolean;
     metrics: React.ComponentProps<typeof ShieldOverlay>["metrics"];
     fromCache?: boolean;
+    scoreExplanations?: Record<string, string>;
     pageUrl: string;
     links: string[];
+    pageText: string;
+    sessionId: string;
     onClose: () => void;
   }
 ) {
+  const fetchChat = makeFetchChat(opts.pageText, opts.sessionId);
+  const fetchChorus = makeFetchChorus();
   root.render(
     <ShieldOverlay
       loading={opts.loading}
       metrics={opts.metrics}
       fromCache={opts.fromCache}
+      scoreExplanations={opts.scoreExplanations}
       pageUrl={opts.pageUrl}
       links={opts.links}
       onAriadneLoad={() => {}}
       onClose={opts.onClose}
       fetchAriadne={fetchAriadne}
+      pageText={opts.pageText}
+      sessionId={opts.sessionId}
+      fetchChat={fetchChat}
+      fetchChorus={fetchChorus}
     />
   );
 }
@@ -112,6 +158,10 @@ function isLowScore(metrics: AnalyzeResponse["text_metrics"]): boolean {
 const HIGHLIGHT_STYLE_ID = "odysseus-low-score-styles";
 const CLASS_MEDIA = "odysseus-highlight-media";
 const CLASS_EXCERPT = "odysseus-highlight-excerpt";
+
+const DEEPFAKE_STYLE_ID = "odysseus-deepfake-styles";
+const CLASS_DEEPFAKE = "odysseus-deepfake-overlay";
+const DEEPFAKE_THRESHOLD = 0.5;
 
 function normalizeText(s: string): string {
   return (s || "").replace(/\s+/g, " ").trim();
@@ -186,16 +236,50 @@ function clearLowScoreHighlights() {
   });
 }
 
+function ensureDeepfakeStyles() {
+  if (document.getElementById(DEEPFAKE_STYLE_ID)) return;
+  const style = document.createElement("style");
+  style.id = DEEPFAKE_STYLE_ID;
+  style.textContent = `
+    .${CLASS_DEEPFAKE} {
+      filter: blur(12px) !important;
+      pointer-events: none !important;
+    }
+  `;
+  (document.head || document.documentElement).appendChild(style);
+}
+
+function applyDeepfakeOverlay() {
+  ensureDeepfakeStyles();
+  document.querySelectorAll("video").forEach((el) => {
+    const video = el as HTMLVideoElement;
+    video.classList.add(CLASS_DEEPFAKE);
+    try {
+      video.pause();
+    } catch {
+      // ignore
+    }
+  });
+}
+
+function clearDeepfakeOverlay() {
+  document.querySelectorAll(`video.${CLASS_DEEPFAKE}`).forEach((el) => {
+    el.classList.remove(CLASS_DEEPFAKE);
+  });
+}
+
 let odysseusRootEl: HTMLDivElement | null = null;
 let odysseusReactRoot: ReturnType<typeof createRoot> | null = null;
 let lastPageUrl: string | null = null;
 let cachedMetrics: AnalyzeResponse["text_metrics"] | null = null;
 let cachedFromCache = false;
 let cachedContributingExcerpts: Record<string, string[]> | undefined = undefined;
+let cachedScoreExplanations: Record<string, string> = {};
 
 function hideOverlay() {
   if (odysseusRootEl) odysseusRootEl.style.display = "none";
   clearLowScoreHighlights();
+  clearDeepfakeOverlay();
 }
 
 function showOverlay() {
@@ -226,8 +310,11 @@ function openAndMaybeAnalyze() {
       loading: false,
       metrics: cachedMetrics,
       fromCache: cachedFromCache,
+      scoreExplanations: cachedScoreExplanations,
       pageUrl: url,
       links,
+      pageText: text,
+      sessionId: url,
       onClose,
     });
     return;
@@ -236,6 +323,7 @@ function openAndMaybeAnalyze() {
   lastPageUrl = url;
   cachedMetrics = null;
   cachedFromCache = false;
+  cachedScoreExplanations = {};
   cachedContributingExcerpts = undefined;
 
   renderOverlay(odysseusReactRoot, {
@@ -243,6 +331,8 @@ function openAndMaybeAnalyze() {
     metrics: null,
     pageUrl: url,
     links,
+    pageText: text,
+    sessionId: url,
     onClose,
   });
 
@@ -265,12 +355,20 @@ function openAndMaybeAnalyze() {
         cachedContributingExcerpts = data.contributing_excerpts;
         if (data.neutral_headline) applyHypeFilter(data.neutral_headline);
         if (isLowScore(data.text_metrics)) applyLowScoreHighlights(data.text_metrics, data.contributing_excerpts);
+        const videoInfo = data.media_metrics?.video as { deepfake_score?: number } | undefined;
+        if (videoInfo && typeof videoInfo.deepfake_score === "number" && videoInfo.deepfake_score > DEEPFAKE_THRESHOLD) {
+          applyDeepfakeOverlay();
+        }
+        cachedScoreExplanations = data.score_explanations || {};
         renderOverlay(odysseusReactRoot!, {
           loading: false,
           metrics: data.text_metrics,
           fromCache: data.from_cache,
+          scoreExplanations: data.score_explanations,
           pageUrl: url,
           links,
+          pageText: text,
+          sessionId: url,
           onClose,
         });
       } else {
@@ -279,6 +377,8 @@ function openAndMaybeAnalyze() {
           metrics: null,
           pageUrl: url,
           links,
+          pageText: text,
+          sessionId: url,
           onClose,
         });
       }

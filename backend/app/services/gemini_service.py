@@ -182,6 +182,74 @@ def _parse_contributing_excerpts(text: str) -> dict[str, list[str]]:
     return {k: v for k, v in result.items() if v}
 
 
+def get_score_explanations(text: str, text_metrics: TextMetrics) -> dict[str, str]:
+    """
+    For each metric below LOW_SCORE_THRESHOLD, get a 1-2 sentence specific explanation of
+    the argument or evidence in the text that led to that low score. Returns e.g. {"humanity": "...", ...}.
+    """
+    if not _get_client() or not (text or "").strip():
+        return {}
+    low_metrics = []
+    if text_metrics.humanity < LOW_SCORE_THRESHOLD:
+        low_metrics.append("humanity")
+    if text_metrics.integrity < LOW_SCORE_THRESHOLD:
+        low_metrics.append("integrity")
+    if text_metrics.rhetoric < LOW_SCORE_THRESHOLD:
+        low_metrics.append("rhetoric")
+    if not low_metrics:
+        return {}
+    cfg = get_config()
+    model_name = cfg.get("gemini_model") or "gemini-2.0-flash"
+    snippet = (text or "")[:25000]
+    prompt = f"""This web page text was scored. The following metrics are LOW. For each, write 1-2 sentences that explain the specific argument or evidence in the text that led to this low score. Be concrete: cite what in the text (tone, claims, wording) drove the score down.
+
+Low metrics: {", ".join(low_metrics)}
+Scores: humanity={text_metrics.humanity:.0f}, integrity={text_metrics.integrity:.0f}, rhetoric={text_metrics.rhetoric:.0f}
+
+Output format (use these exact headers). One line per metric.
+
+humanity_explanation: <one or two sentences, or "none" if humanity was not low>
+
+integrity_explanation: <one or two sentences, or "none" if integrity was not low>
+
+rhetoric_explanation: <one or two sentences, or "none" if rhetoric was not low>
+
+Text:
+{snippet}
+"""
+    raw = _generate(model_name, prompt)
+    if not raw:
+        return {}
+    result = _parse_score_explanations(raw, low_metrics)
+    logger.info("gemini get_score_explanations low_metrics=%s keys=%s", low_metrics, list(result.keys()))
+    return result
+
+
+def _parse_score_explanations(text: str, low_metrics: list[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    current: str | None = None
+    buf: list[str] = []
+    for line in text.strip().split("\n"):
+        line_stripped = line.strip()
+        lower = line_stripped.lower()
+        found_header = False
+        for key in ("humanity_explanation", "integrity_explanation", "rhetoric_explanation"):
+            metric = key.replace("_explanation", "")
+            if lower.startswith(key + ":") or lower.startswith(key + " "):
+                if current and buf:
+                    out[current] = " ".join(buf).strip()
+                current = metric if metric in low_metrics else None
+                rest = line_stripped.split(":", 1)[-1].strip() if ":" in line_stripped else ""
+                buf = [rest] if rest and rest.lower() != "none" else []
+                found_header = True
+                break
+        if not found_header and current and line_stripped and line_stripped.lower() != "none":
+            buf.append(line_stripped)
+    if current and buf:
+        out[current] = " ".join(buf).strip()
+    return {k: v for k, v in out.items() if v and k in low_metrics}
+
+
 def fact_check_claim(claim: str, context: str = "") -> tuple[str, str]:
     """
     Use Gemini to fact-check a claim. Returns (verdict, explanation).
@@ -290,17 +358,100 @@ def _parse_link_classifications(text: str, links: list[str]) -> list[dict]:
     return result
 
 
+def substantiate_claims(page_url: str, page_summary: str, classified_links: list[dict]) -> tuple[str, dict[str, str]]:
+    """
+    Given page summary and classified links, return (substantiation_summary, link_notes).
+    substantiation_summary: one short paragraph on whether the page's claims are likely substantiated.
+    link_notes: url -> short note e.g. "Primary source for the study" or "Same outlet – verify elsewhere".
+    """
+    if not _get_client() or not (page_summary or "").strip() or not classified_links:
+        return "", {}
+    cfg = get_config()
+    model_name = cfg.get("gemini_model") or "gemini-2.0-flash"
+    summary_snippet = (page_summary or "")[:4000]
+    links_blob = "\n".join(
+        f"- {c.get('url', '')} (type: {c.get('type', 'unknown')}, label: {c.get('label', '')})"
+        for c in classified_links[:25]
+    )
+    prompt = f"""Page URL: {page_url}
+
+Page summary/content (excerpt):
+{summary_snippet}
+
+Outbound links (with classification type):
+{links_blob}
+
+1. In one short paragraph, assess whether the page's main claims appear to be substantiated by these links. Consider: Do any links point to primary/original sources? Are many links same-network (same outlet) and thus not independent verification? Can a reader actually verify claims using these links?
+
+2. For each link URL above, give one short note (e.g. "Primary source for the study", "Same publisher – cannot independently verify", "Likely supports claim", "Unclear relevance"). Use the exact URL as key.
+
+Output format:
+
+SUBSTANTIATION_SUMMARY:
+<one paragraph>
+
+LINK_NOTES:
+<url> | <note>
+<url> | <note>
+..."""
+    raw = _generate(model_name, prompt)
+    if not raw:
+        return "", {}
+    summary = ""
+    notes: dict[str, str] = {}
+    in_summary = False
+    in_notes = False
+    summary_lines: list[str] = []
+    for line in raw.strip().split("\n"):
+        stripped = line.strip()
+        lower = stripped.lower()
+        if lower.startswith("substantiation_summary:") or lower.startswith("substantiationsummary:"):
+            in_summary = True
+            in_notes = False
+            rest = stripped.split(":", 1)[-1].strip()
+            if rest:
+                summary_lines.append(rest)
+            continue
+        if lower.startswith("link_notes:") or lower.startswith("linknotes:"):
+            in_summary = False
+            in_notes = True
+            continue
+        if in_summary and stripped:
+            summary_lines.append(stripped)
+        if in_notes and "|" in stripped:
+            parts = stripped.split("|", 1)
+            url = (parts[0].strip() or "").strip()
+            note = (parts[1].strip() or "").strip()[:200]
+            if url and note:
+                notes[url] = note
+    summary = " ".join(summary_lines).strip()[:800]
+    logger.info("gemini substantiate_claims summary_len=%s notes_count=%s", len(summary), len(notes))
+    return summary, notes
+
+
 def chat_with_page(page_text: str, message: str, history: list[dict] | None = None) -> str:
-    """Oracle: answer user question about the page using Gemini (large context)."""
+    """Oracle: answer user question about the page using Gemini (large context). Uses history for multi-turn context."""
     cfg = get_config()
     model_name = cfg.get("gemini_model") or "gemini-2.0-flash"
     context = (page_text or "")[:80000]
+    # Use last 10 messages (5 turns) for context
+    recent = (history or [])[-10:]
+    history_blob = ""
+    if recent:
+        lines = []
+        for msg in recent:
+            role = msg.get("role", "")
+            content = (msg.get("content") or "").strip()
+            if content:
+                lines.append(f"{role}: {content}")
+        if lines:
+            history_blob = "\nPrevious conversation:\n" + "\n".join(lines) + "\n\n"
     logger.info("gemini chat_with_page page_text_len=%s context_len=%s message_len=%s history_len=%s model=%s", len(page_text or ""), len(context), len(message or ""), len(history or []), model_name)
     if not _get_client():
         logger.warning("gemini chat_with_page skipped: no client")
         return "API not configured."
-    prompt = f"""You are Odysseus Oracle. Answer the user's question based only on the following web page content. Be concise.
-
+    prompt = f"""You are Odysseus Oracle. Answer the user's question based only on the following web page content and the previous conversation (if any). Be concise.
+{history_blob}
 Page content:
 {context}
 
@@ -333,38 +484,59 @@ Rewritten:"""
     return out
 
 
-def chorus_alternatives(topic_or_summary: str) -> list[dict]:
-    """Chorus: suggest alternative perspectives."""
+def _chorus_search_queries(topic_or_summary: str) -> list[str]:
+    """Ask Gemini for 2-3 search queries to find real articles with alternative perspectives. Returns list of query strings (no URLs)."""
     cfg = get_config()
     model_name = cfg.get("gemini_model") or "gemini-2.0-flash"
-    topic_preview = (topic_or_summary or "")[:80] + ("..." if len(topic_or_summary or "") > 80 else "")
-    logger.info("gemini chorus_alternatives topic_len=%s topic_preview=%r model=%s", len(topic_or_summary or ""), topic_preview, model_name)
     if not _get_client() or not (topic_or_summary or "").strip():
-        logger.debug("gemini chorus_alternatives skipped (no client or empty topic)")
         return []
-    prompt = f"""Topic/summary: {topic_or_summary[:2000]}
+    prompt = f"""Topic or article summary: {topic_or_summary[:2000]}
 
-Suggest 2-3 alternative viewpoints or sources the user could read (different perspective on the same topic). For each, respond with one line: label | url | perspective
-Use placeholder URLs like https://example.com/neutral if you don't have real links. Perspective can be: neutral, left, right, international, etc.
+Generate exactly 2 or 3 short search queries that would find real news articles or opinion pieces offering a different perspective on this same topic. Output one search query per line. Do not include any URLs or labels—only the search query text. Example:
+alternative view on [topic]
+[topic] criticism analysis
+[topic] fact check different perspective
 
-Suggestions:"""
+Search queries:"""
     raw = _generate(model_name, prompt)
     if not raw:
-        logger.warning("gemini chorus_alternatives empty response")
         return []
-    result = _parse_chorus(raw)
-    logger.info("gemini chorus_alternatives result_count=%s items=%s", len(result), [r.get("label") for r in result])
-    return result
+    queries = [q.strip() for q in raw.strip().split("\n") if q.strip()][:3]
+    return queries
 
 
-def _parse_chorus(text: str) -> list[dict]:
-    out = []
-    for line in text.strip().split("\n"):
-        parts = line.split("|")
-        if len(parts) >= 2:
-            label = parts[0].strip()
-            url = parts[1].strip()
-            perspective = parts[2].strip() if len(parts) > 2 else ""
-            if label and url:
-                out.append({"label": label, "url": url, "perspective": perspective})
-    return out[:5]
+def chorus_alternatives(topic_or_summary: str) -> list[dict]:
+    """Chorus: real articles via search API. Uses Gemini to build search queries, then Serper for real links."""
+    from app.services.search_service import search
+    topic_or_summary = (topic_or_summary or "").strip()
+    if not topic_or_summary:
+        return []
+    cfg = get_config()
+    has_serper = bool((cfg.get("serper_api_key") or "").strip())
+    if not has_serper:
+        logger.warning("chorus_alternatives: SERPER_API_KEY not set; add it for real article links")
+        return []
+    queries = _chorus_search_queries(topic_or_summary)
+    if not queries:
+        # Fallback: single query from topic
+        queries = [topic_or_summary[:100]]
+    seen_urls: set[str] = set()
+    out: list[dict] = []
+    for q in queries:
+        results = search(q, num=3)
+        for r in results:
+            link = (r.get("link") or "").strip()
+            if not link or link in seen_urls:
+                continue
+            seen_urls.add(link)
+            out.append({
+                "label": (r.get("title") or link)[:150],
+                "url": link,
+                "perspective": (r.get("snippet") or "alternative perspective")[:200],
+            })
+            if len(out) >= 5:
+                break
+        if len(out) >= 5:
+            break
+    logger.info("chorus_alternatives queries=%s result_count=%s", queries, len(out))
+    return out

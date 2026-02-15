@@ -1,4 +1,4 @@
-"""FastAPI app: CORS, health, analyze stub."""
+"""FastAPI app: CORS, request logging, health, and API routes (analyze, litmus, ariadne, chat, chorus)."""
 import logging
 import time
 from fastapi import FastAPI, Request

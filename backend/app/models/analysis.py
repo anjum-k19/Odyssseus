@@ -38,6 +38,8 @@ class AnalyzeResponse(BaseModel):
     neutral_headline: str = ""  # Hype-Filter: rewritten headline
     # Excerpts that most contributed to low scores (metric name -> list of exact quotes from page text)
     contributing_excerpts: dict[str, list[str]] = Field(default_factory=dict)
+    # Specific explanation per low score: the argument/evidence that led to that score (metric -> 1-2 sentences)
+    score_explanations: dict[str, str] = Field(default_factory=dict)
 
 
 class LitmusRequest(BaseModel):
@@ -58,12 +60,14 @@ class AriadneRequest(BaseModel):
     """Request body for POST /ariadne."""
     url: str
     links: list[str] = Field(default_factory=list)
+    page_summary: str = ""  # Optional page text/summary for substantiation analysis
 
 
 class AriadneNode(BaseModel):
     id: str
     label: str
     type: str = "unknown"  # original_source | same_network | unknown | broken
+    note: str = ""  # Substantiation note: e.g. "Primary source" or "Same outlet – verify elsewhere"
 
 
 class AriadneEdge(BaseModel):
@@ -78,6 +82,7 @@ class AriadneResponse(BaseModel):
     edges: list[AriadneEdge]
     alerts: list[str] = Field(default_factory=list)
     from_cache: bool = False
+    substantiation_summary: str = ""  # Whether claims are substantiated by the linked sources
 
 
 class ChatRequest(BaseModel):

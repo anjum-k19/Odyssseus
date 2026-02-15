@@ -15,6 +15,8 @@ export interface AnalyzeResponse {
   neutral_headline?: string;
   /** Excerpts that most contributed to low scores (metric -> list of exact quotes). */
   contributing_excerpts?: Record<string, string[]>;
+  /** Specific explanation per low score: the argument/evidence that led to that score. */
+  score_explanations?: Record<string, string>;
 }
 
 export interface AnalyzeRequest {
@@ -53,6 +55,7 @@ export interface AriadneNode {
   id: string;
   label: string;
   type: string;
+  note?: string; // Substantiation note, e.g. "Primary source" or "Same outlet – verify elsewhere"
 }
 
 export interface AriadneEdge {
@@ -66,13 +69,18 @@ export interface AriadneResponse {
   edges: AriadneEdge[];
   alerts: string[];
   from_cache: boolean;
+  substantiation_summary?: string;
 }
 
-export async function getAriadneGraph(url: string, links: string[]): Promise<AriadneResponse> {
+export async function getAriadneGraph(
+  url: string,
+  links: string[],
+  pageSummary?: string
+): Promise<AriadneResponse> {
   const res = await fetch(`${API_BASE}/api/ariadne`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url, links }),
+    body: JSON.stringify({ url, links, page_summary: pageSummary || "" }),
   });
   if (!res.ok) throw new Error(`Ariadne failed: ${res.status}`);
   return res.json() as Promise<AriadneResponse>;

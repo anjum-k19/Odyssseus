@@ -12,4 +12,5 @@ def get_config():
         "gemini_api_key": os.getenv("GEMINI_API_KEY", ""),
         "gemini_model": os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
         "twelve_labs_api_key": os.getenv("TWELVE_LABS_API_KEY", ""),
+        "serper_api_key": os.getenv("SERPER_API_KEY", ""),
     }

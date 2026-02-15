@@ -55,14 +55,56 @@ chrome.runtime.onMessage.addListener(
       return true;
     }
     if (msg.type === "ARIADNE_FETCH" && msg.payload) {
-      const { url, links } = msg.payload as { url: string; links: string[] };
+      const { url, links, page_summary } = msg.payload as {
+        url: string;
+        links: string[];
+        page_summary?: string;
+      };
       fetch(`${API_BASE}/api/ariadne`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, links }),
+        body: JSON.stringify({ url, links, page_summary: page_summary || "" }),
       })
         .then((res) => {
           if (!res.ok) throw new Error(`Ariadne failed: ${res.status}`);
+          return res.json();
+        })
+        .then((data) => sendResponse({ ok: true, data }))
+        .catch((err) => sendResponse({ ok: false, error: String(err.message) }));
+      return true;
+    }
+    if (msg.type === "CHAT_FETCH" && msg.payload) {
+      const { page_text, message, session_id } = msg.payload as {
+        page_text: string;
+        message: string;
+        session_id: string;
+      };
+      fetch(`${API_BASE}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          page_text: page_text,
+          message: message,
+          session_id: session_id || undefined,
+        }),
+      })
+        .then((res) => {
+          if (!res.ok) throw new Error(`Chat failed: ${res.status}`);
+          return res.json();
+        })
+        .then((data) => sendResponse({ ok: true, data }))
+        .catch((err) => sendResponse({ ok: false, error: String(err.message) }));
+      return true;
+    }
+    if (msg.type === "CHORUS_FETCH" && msg.payload) {
+      const { url, topic_or_summary } = msg.payload as { url: string; topic_or_summary: string };
+      fetch(`${API_BASE}/api/chorus`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, topic_or_summary: topic_or_summary || url }),
+      })
+        .then((res) => {
+          if (!res.ok) throw new Error(`Chorus failed: ${res.status}`);
           return res.json();
         })
         .then((data) => sendResponse({ ok: true, data }))

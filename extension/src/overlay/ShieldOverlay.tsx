@@ -156,33 +156,96 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     color: "#b55",
   },
+  section: {
+    marginTop: 12,
+    paddingTop: 10,
+    borderTop: "1px solid rgba(255,255,255,0.1)",
+  },
+  chatMessages: {
+    maxHeight: 160,
+    overflow: "auto",
+    marginBottom: 8,
+    fontSize: 12,
+  },
+  chatBubble: {
+    marginBottom: 6,
+    padding: "6px 10px",
+    borderRadius: 8,
+    fontSize: 12,
+  },
+  chatInputRow: {
+    display: "flex",
+    gap: 6,
+    marginTop: 4,
+  },
+  chatInput: {
+    flex: 1,
+    padding: "6px 10px",
+    background: "rgba(255,255,255,0.08)",
+    border: "1px solid rgba(212,175,55,0.4)",
+    borderRadius: 6,
+    color: "#e8e6e3",
+    fontSize: 12,
+  },
+  chorusLink: {
+    display: "block",
+    marginTop: 6,
+    fontSize: 12,
+    color: "#d4af37",
+    wordBreak: "break-all" as const,
+  },
 };
+
+export interface ChorusLinkItem {
+  label: string;
+  url: string;
+  perspective: string;
+}
 
 interface Props {
   loading: boolean;
   metrics: TextMetricsType | null;
   fromCache?: boolean;
+  /** Specific explanation per low score (from backend). When present, shown instead of generic lowExplanation. */
+  scoreExplanations?: Record<string, string>;
   pageUrl?: string;
   links?: string[];
   onAriadneLoad?: () => void;
   onClose?: () => void;
-  /** Fetches Ariadne graph via background script (required for same-origin). */
-  fetchAriadne?: (url: string, links: string[]) => Promise<AriadneResponse>;
+  /** Fetches Ariadne graph via background script (required for same-origin). Pass pageSummary for substantiation. */
+  fetchAriadne?: (url: string, links: string[], pageSummary?: string) => Promise<AriadneResponse>;
+  /** Oracle: chat with page. When provided, shows chat section. */
+  pageText?: string;
+  sessionId?: string;
+  fetchChat?: (message: string) => Promise<string>;
+  /** Chorus: alternative perspectives. When provided, shows "Other perspectives" and fetches links. */
+  fetchChorus?: (url: string, topicOrSummary: string) => Promise<ChorusLinkItem[]>;
 }
 
 export function ShieldOverlay({
   loading,
   metrics,
   fromCache,
+  scoreExplanations = {},
   pageUrl = "",
   links = [],
   onAriadneLoad,
   onClose,
   fetchAriadne,
+  pageText,
+  sessionId,
+  fetchChat,
+  fetchChorus,
 }: Props) {
   const [ariadneOpen, setAriadneOpen] = useState(false);
   const [ariadneLoading, setAriadneLoading] = useState(false);
   const [ariadneData, setAriadneData] = useState<AriadneResponse | null>(null);
+  const [chatMessages, setChatMessages] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatSending, setChatSending] = useState(false);
+  const [chorusOpen, setChorusOpen] = useState(false);
+  const [chorusLoading, setChorusLoading] = useState(false);
+  const [chorusLinks, setChorusLinks] = useState<ChorusLinkItem[]>([]);
 
   const loadAriadne = () => {
     if (!pageUrl || ariadneData) {
@@ -195,13 +258,41 @@ export function ShieldOverlay({
     }
     setAriadneLoading(true);
     setAriadneOpen(true);
-    fetchAriadne(pageUrl, links)
+    fetchAriadne(pageUrl, links, pageText?.slice(0, 1500))
       .then((data) => {
         setAriadneData(data);
         onAriadneLoad?.();
       })
       .catch(() => setAriadneData(null))
       .finally(() => setAriadneLoading(false));
+  };
+
+  const sendChat = () => {
+    const msg = chatInput.trim();
+    if (!msg || !fetchChat || chatSending) return;
+    setChatInput("");
+    setChatMessages((prev) => [...prev, { role: "user", content: msg }]);
+    setChatSending(true);
+    fetchChat(msg)
+      .then((reply) => {
+        setChatMessages((prev) => [...prev, { role: "assistant", content: reply }]);
+      })
+      .catch(() => {
+        setChatMessages((prev) => [...prev, { role: "assistant", content: "Sorry, the request failed." }]);
+      })
+      .finally(() => setChatSending(false));
+  };
+
+  const loadChorus = () => {
+    if (!fetchChorus || !pageUrl) return;
+    setChorusOpen(true);
+    setChorusLoading(true);
+    // Pass page content (or URL) so backend can generate topic-relevant search queries
+    const topicOrSummary = (pageText || "").trim().slice(0, 2000) || pageUrl;
+    fetchChorus(pageUrl, topicOrSummary)
+      .then(setChorusLinks)
+      .catch(() => setChorusLinks([]))
+      .finally(() => setChorusLoading(false));
   };
 
   const scoreItems: { key: ScoreKey; label: string; value: number }[] = metrics
@@ -291,7 +382,7 @@ export function ShieldOverlay({
               {lowScores.map((key) => (
                 <div key={key} style={{ marginTop: 4 }}>
                   <strong>{SCORE_CONFIG[key].label}:</strong>{" "}
-                  {SCORE_CONFIG[key].lowExplanation}
+                  {scoreExplanations[key] || SCORE_CONFIG[key].lowExplanation}
                 </div>
               ))}
             </div>
@@ -314,6 +405,11 @@ export function ShieldOverlay({
           {ariadneLoading && <div style={styles.loading}>Loading…</div>}
           {!ariadneLoading && ariadneData && (
             <>
+              {ariadneData.substantiation_summary && (
+                <div style={{ ...styles.ariadneNode, marginBottom: 8, color: "#c0c0c0", fontStyle: "italic" }}>
+                  {ariadneData.substantiation_summary}
+                </div>
+              )}
               {ariadneData.alerts.length > 0 &&
                 ariadneData.alerts.map((a, i) => (
                   <div key={i} style={styles.ariadneAlert}>
@@ -326,6 +422,9 @@ export function ShieldOverlay({
                     [{n.type}]
                   </span>{" "}
                   {n.label}
+                  {n.note && (
+                    <span style={{ display: "block", fontSize: 11, color: "#888", marginTop: 2 }}>{n.note}</span>
+                  )}
                 </div>
               ))}
               {ariadneData.nodes.length > 15 && (
@@ -334,6 +433,69 @@ export function ShieldOverlay({
             </>
           )}
         </div>
+      )}
+      {fetchChat && pageText != null && sessionId && (
+        <div style={styles.section}>
+          <div style={styles.title}>Oracle – Chat with page</div>
+          <div style={styles.chatMessages}>
+            {chatMessages.map((m, i) => (
+              <div
+                key={i}
+                style={{
+                  ...styles.chatBubble,
+                  background: m.role === "user" ? "rgba(212,175,55,0.2)" : "rgba(255,255,255,0.06)",
+                  marginLeft: m.role === "assistant" ? 0 : 16,
+                  marginRight: m.role === "user" ? 0 : 16,
+                }}
+              >
+                {m.content}
+              </div>
+            ))}
+          </div>
+          <div style={styles.chatInputRow}>
+            <input
+              type="text"
+              style={styles.chatInput}
+              placeholder="Ask about this page…"
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && sendChat()}
+              disabled={chatSending}
+            />
+            <button type="button" style={styles.linkBtn} onClick={sendChat} disabled={chatSending}>
+              {chatSending ? "…" : "Send"}
+            </button>
+          </div>
+        </div>
+      )}
+      {fetchChorus && pageUrl && (
+        <>
+          <button style={styles.linkBtn} type="button" onClick={loadChorus}>
+            Other perspectives (Chorus)
+          </button>
+          {chorusOpen && (
+            <div style={styles.section}>
+              <div style={styles.title}>Chorus</div>
+              {chorusLoading && <div style={styles.loading}>Loading…</div>}
+              {!chorusLoading && chorusLinks.length > 0 &&
+                chorusLinks.map((link, i) => (
+                  <a
+                    key={i}
+                    href={link.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={styles.chorusLink}
+                  >
+                    {link.label}
+                    {link.perspective ? ` (${link.perspective})` : ""}
+                  </a>
+                ))}
+              {!chorusLoading && chorusLinks.length === 0 && chorusOpen && (
+                <div style={styles.label}>No alternatives returned.</div>
+              )}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

@@ -17,8 +17,11 @@ def chat(req: ChatRequest):
     history = get_chat_context(req.session_id) if req.session_id else None
     logger.info("chat history from_cache=%s messages=%s", history is not None, len(history) if history else 0)
     reply = chat_with_page(req.page_text, req.message, history)
-    if req.session_id and history is not None:
-        new_history = history + [{"role": "user", "content": req.message}, {"role": "assistant", "content": reply}]
+    if req.session_id:
+        new_history = (history or []) + [
+            {"role": "user", "content": req.message},
+            {"role": "assistant", "content": reply},
+        ]
         set_chat_context(req.session_id, new_history[-20:])
         logger.info("chat updated session history len=%s", len(new_history[-20:]))
     logger.info("chat reply_len=%s", len(reply or ""))
