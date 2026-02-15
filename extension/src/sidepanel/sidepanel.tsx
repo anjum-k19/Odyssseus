@@ -47,13 +47,15 @@ function SidePanelApp() {
   const [analysis, setAnalysis] = useState<AnalyzeResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    // 1. Get page data from the active tab (via background)
+  const loadForActiveTab = useCallback(() => {
+    setLoading(true);
+    setPageData(null);
+    setAnalysis(null);
+    setPageError(null);
     send<PageData>("GET_PAGE_DATA")
       .then((data) => {
         setPageData(data);
         setPageError(null);
-        // 2. Run analysis directly from panel (long request; service worker would time out)
         return fetchAnalyze(data.url, data.text, data.media);
       })
       .then((data) => {
@@ -68,6 +70,19 @@ function SidePanelApp() {
       })
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    loadForActiveTab();
+  }, [loadForActiveTab]);
+
+  // When user switches to another tab, refresh to show that tab's analysis
+  useEffect(() => {
+    const listener = (msg: { type?: string }) => {
+      if (msg.type === "ACTIVE_TAB_CHANGED") loadForActiveTab();
+    };
+    chrome.runtime.onMessage.addListener(listener);
+    return () => chrome.runtime.onMessage.removeListener(listener);
+  }, [loadForActiveTab]);
 
   const fetchChat = useCallback(
     (message: string) =>

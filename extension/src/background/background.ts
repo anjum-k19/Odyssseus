@@ -11,6 +11,11 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 });
 
+// Notify side panel when user switches tabs so it can refresh for the new page.
+chrome.tabs.onActivated.addListener(() => {
+  chrome.runtime.sendMessage({ type: "ACTIVE_TAB_CHANGED" }).catch(() => {});
+});
+
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId !== "odysseus-check" || !tab?.id || !info.selectionText) return;
   chrome.tabs.sendMessage(tab.id, { type: "LITMUS_CHECK", claim: info.selectionText });
