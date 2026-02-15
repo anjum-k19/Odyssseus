@@ -13,6 +13,8 @@ export interface AnalyzeResponse {
   media_metrics: Record<string, unknown>;
   from_cache: boolean;
   neutral_headline?: string;
+  /** Excerpts that most contributed to low scores (metric -> list of exact quotes). */
+  contributing_excerpts?: Record<string, string[]>;
 }
 
 export interface AnalyzeRequest {

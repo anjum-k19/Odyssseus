@@ -36,6 +36,8 @@ class AnalyzeResponse(BaseModel):
     media_metrics: MediaMetrics
     from_cache: bool = False
     neutral_headline: str = ""  # Hype-Filter: rewritten headline
+    # Excerpts that most contributed to low scores (metric name -> list of exact quotes from page text)
+    contributing_excerpts: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class LitmusRequest(BaseModel):

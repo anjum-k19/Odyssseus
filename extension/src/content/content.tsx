@@ -1,17 +1,40 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
+import { Readability } from "@mozilla/readability";
 import { ShieldOverlay } from "../overlay/ShieldOverlay";
 import type { AnalyzeResponse, AriadneResponse } from "../shared/api";
 
+const MAX_TEXT_LENGTH = 50000;
+const MIN_READABILITY_LENGTH = 80; // If Readability returns less, fall back to heuristic
+
+/**
+ * Extract main article/content text to send to the backend.
+ * Uses Mozilla Readability (Firefox Reader View algorithm) to strip ads, sidebars,
+ * related posts, and nav, then falls back to article/main/body if Readability fails.
+ */
 function extractPageText(): string {
   const body = document.body;
   if (!body) return "";
+
+  try {
+    const documentClone = document.cloneNode(true) as Document;
+    const reader = new Readability(documentClone, {
+      charThreshold: 100,
+    });
+    const article = reader.parse();
+    if (article?.textContent && article.textContent.trim().length >= MIN_READABILITY_LENGTH) {
+      return article.textContent.trim().slice(0, MAX_TEXT_LENGTH);
+    }
+  } catch {
+    // Readability can throw on odd DOMs; fall through to heuristic
+  }
+
   const article =
     document.querySelector("article") ||
     document.querySelector("main") ||
     document.querySelector("[role='main']");
   const root = article || body;
-  return (root as HTMLElement).innerText?.slice(0, 50000) ?? "";
+  return (root as HTMLElement).innerText?.slice(0, MAX_TEXT_LENGTH) ?? "";
 }
 
 function extractMedia(): string[] {
@@ -88,7 +111,29 @@ function isLowScore(metrics: AnalyzeResponse["text_metrics"]): boolean {
 
 const HIGHLIGHT_STYLE_ID = "odysseus-low-score-styles";
 const CLASS_MEDIA = "odysseus-highlight-media";
-const CLASS_CONTENT = "odysseus-highlight-content";
+const CLASS_EXCERPT = "odysseus-highlight-excerpt";
+
+function normalizeText(s: string): string {
+  return (s || "").replace(/\s+/g, " ").trim();
+}
+
+/** Block-level elements that can contain the excerpt text. */
+const TEXT_BLOCK_SELECTOR = "p, li, h1, h2, h3, h4, h5, h6, blockquote, td, th, figcaption, [role='paragraph']";
+
+function findBlocksContainingExcerpt(excerpt: string): Element[] {
+  const normalizedExcerpt = normalizeText(excerpt);
+  if (normalizedExcerpt.length < 10) return [];
+  const blocks = document.querySelectorAll(TEXT_BLOCK_SELECTOR);
+  const matched: Element[] = [];
+  for (const block of blocks) {
+    const text = (block as HTMLElement).innerText || "";
+    if (!text) continue;
+    if (normalizeText(text).includes(normalizedExcerpt) || normalizedExcerpt.includes(normalizeText(text))) {
+      matched.push(block);
+    }
+  }
+  return matched;
+}
 
 function ensureHighlightStyles() {
   if (document.getElementById(HIGHLIGHT_STYLE_ID)) return;
@@ -100,34 +145,44 @@ function ensureHighlightStyles() {
       outline-offset: 2px !important;
       border-radius: 4px;
     }
-    .${CLASS_CONTENT} {
-      background: rgba(244, 67, 54, 0.08) !important;
-      box-shadow: inset 0 0 0 1px rgba(244, 67, 54, 0.25);
+    .${CLASS_EXCERPT} {
+      background: rgba(244, 67, 54, 0.12) !important;
+      box-shadow: inset 0 0 0 1px rgba(244, 67, 54, 0.35);
     }
   `;
   (document.head || document.documentElement).appendChild(style);
 }
 
-function applyLowScoreHighlights(metrics: AnalyzeResponse["text_metrics"]) {
+function applyLowScoreHighlights(
+  metrics: AnalyzeResponse["text_metrics"],
+  contributing_excerpts?: Record<string, string[]>
+) {
   if (!isLowScore(metrics)) return;
   ensureHighlightStyles();
   document.querySelectorAll("img[src], video").forEach((el) => {
     el.classList.add(CLASS_MEDIA);
   });
-  const main =
-    document.querySelector("article") ||
-    document.querySelector("main") ||
-    document.querySelector("[role='main']") ||
-    document.body;
-  if (main) main.classList.add(CLASS_CONTENT);
+  if (contributing_excerpts && Object.keys(contributing_excerpts).length > 0) {
+    const seen = new Set<Element>();
+    for (const excerpts of Object.values(contributing_excerpts)) {
+      for (const excerpt of excerpts) {
+        for (const block of findBlocksContainingExcerpt(excerpt)) {
+          if (!seen.has(block)) {
+            seen.add(block);
+            block.classList.add(CLASS_EXCERPT);
+          }
+        }
+      }
+    }
+  }
 }
 
 function clearLowScoreHighlights() {
   document.querySelectorAll(`.${CLASS_MEDIA}`).forEach((el) => {
     el.classList.remove(CLASS_MEDIA);
   });
-  document.querySelectorAll(`.${CLASS_CONTENT}`).forEach((el) => {
-    el.classList.remove(CLASS_CONTENT);
+  document.querySelectorAll(`.${CLASS_EXCERPT}`).forEach((el) => {
+    el.classList.remove(CLASS_EXCERPT);
   });
 }
 
@@ -136,6 +191,7 @@ let odysseusReactRoot: ReturnType<typeof createRoot> | null = null;
 let lastPageUrl: string | null = null;
 let cachedMetrics: AnalyzeResponse["text_metrics"] | null = null;
 let cachedFromCache = false;
+let cachedContributingExcerpts: Record<string, string[]> | undefined = undefined;
 
 function hideOverlay() {
   if (odysseusRootEl) odysseusRootEl.style.display = "none";
@@ -165,7 +221,7 @@ function openAndMaybeAnalyze() {
 
   // Same page and we already have metrics: show cached, no API call
   if (lastPageUrl === url && cachedMetrics !== null) {
-    if (isLowScore(cachedMetrics)) applyLowScoreHighlights(cachedMetrics);
+    if (isLowScore(cachedMetrics)) applyLowScoreHighlights(cachedMetrics, cachedContributingExcerpts);
     renderOverlay(odysseusReactRoot, {
       loading: false,
       metrics: cachedMetrics,
@@ -180,6 +236,7 @@ function openAndMaybeAnalyze() {
   lastPageUrl = url;
   cachedMetrics = null;
   cachedFromCache = false;
+  cachedContributingExcerpts = undefined;
 
   renderOverlay(odysseusReactRoot, {
     loading: true,
@@ -189,6 +246,15 @@ function openAndMaybeAnalyze() {
     onClose,
   });
 
+  // Log what is being sent to the backend (for debugging / verifying Readability output)
+  const previewLen = 500;
+  console.log("[Odysseus] Sending to backend:", {
+    url: url.slice(0, 80) + (url.length > 80 ? "…" : ""),
+    textLength: text.length,
+    mediaCount: media.length,
+    textPreview: text.length ? text.slice(0, previewLen) + (text.length > previewLen ? "…" : "") : "(empty)",
+  });
+
   chrome.runtime.sendMessage(
     { type: "ANALYZE_PAGE", payload: { url, text, media } },
     (res: { ok: boolean; data?: AnalyzeResponse; error?: string } | undefined) => {
@@ -196,8 +262,9 @@ function openAndMaybeAnalyze() {
         const data = res.data as AnalyzeResponse;
         cachedMetrics = data.text_metrics;
         cachedFromCache = data.from_cache;
+        cachedContributingExcerpts = data.contributing_excerpts;
         if (data.neutral_headline) applyHypeFilter(data.neutral_headline);
-        if (isLowScore(data.text_metrics)) applyLowScoreHighlights(data.text_metrics);
+        if (isLowScore(data.text_metrics)) applyLowScoreHighlights(data.text_metrics, data.contributing_excerpts);
         renderOverlay(odysseusReactRoot!, {
           loading: false,
           metrics: data.text_metrics,

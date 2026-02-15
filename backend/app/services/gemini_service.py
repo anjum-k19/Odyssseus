@@ -98,6 +98,90 @@ def _extract_score(line: str) -> float:
     return 0.0
 
 
+LOW_SCORE_THRESHOLD = 34
+
+
+def get_contributing_excerpts(text: str, text_metrics: TextMetrics) -> dict[str, list[str]]:
+    """
+    When any score is below LOW_SCORE_THRESHOLD, ask Gemini for 2-5 exact quotes from the text
+    that most contributed to that low score. Returns e.g. {"humanity": ["quote1", "quote2"], ...}.
+    """
+    if not _get_client() or not (text or "").strip():
+        return {}
+    low_metrics = []
+    if text_metrics.humanity < LOW_SCORE_THRESHOLD:
+        low_metrics.append(("humanity", "passages that seem AI-generated or lack human nuance"))
+    if text_metrics.integrity < LOW_SCORE_THRESHOLD:
+        low_metrics.append(("integrity", "passages with unsupported claims or weak sourcing"))
+    if text_metrics.rhetoric < LOW_SCORE_THRESHOLD:
+        low_metrics.append(("rhetoric", "passages with emotional manipulation or sensationalism"))
+    if not low_metrics:
+        return {}
+    cfg = get_config()
+    model_name = cfg.get("gemini_model") or "gemini-2.0-flash"
+    snippet = (text or "")[:25000]
+    lines = [
+        f"- {name} (score {getattr(text_metrics, name):.0f}): {desc}"
+        for name, desc in low_metrics
+    ]
+    prompt = f"""This web page text was scored. The following metrics are LOW. For each low metric, list 2-5 exact short quotes from the text below that most contributed to that low score. Each quote must be a contiguous substring copied verbatim from the text.
+
+Low metrics:
+{chr(10).join(lines)}
+
+Output format (use these exact section headers). Under each header put one quote per line. Only include sections for metrics listed above.
+
+humanity_excerpts:
+<one quote per line, or "none" if not applicable>
+
+integrity_excerpts:
+<one quote per line, or "none" if not applicable>
+
+rhetoric_excerpts:
+<one quote per line, or "none" if not applicable>
+
+Text:
+{snippet}
+"""
+    raw = _generate(model_name, prompt)
+    if not raw:
+        logger.warning("gemini get_contributing_excerpts empty response")
+        return {}
+    result = _parse_contributing_excerpts(raw)
+    logger.info(
+        "gemini get_contributing_excerpts low_metrics=%s excerpt_counts=%s",
+        [m[0] for m in low_metrics],
+        {k: len(v) for k, v in result.items()},
+    )
+    return result
+
+
+def _parse_contributing_excerpts(text: str) -> dict[str, list[str]]:
+    """Parse humanity_excerpts:, integrity_excerpts:, rhetoric_excerpts: sections into lists of non-empty lines."""
+    result: dict[str, list[str]] = {"humanity": [], "integrity": [], "rhetoric": []}
+    current: str | None = None
+    for line in text.strip().split("\n"):
+        line_stripped = line.strip()
+        lower = line_stripped.lower()
+        if lower.startswith("humanity_excerpts"):
+            current = "humanity"
+            continue
+        if lower.startswith("integrity_excerpts"):
+            current = "integrity"
+            continue
+        if lower.startswith("rhetoric_excerpts"):
+            current = "rhetoric"
+            continue
+        if current and line_stripped and lower != "none":
+            # Skip lines that look like section headers or instructions
+            if ":" in line_stripped and len(line_stripped) < 60:
+                maybe_label = line_stripped.split(":")[0].strip().lower()
+                if maybe_label in ("humanity", "integrity", "rhetoric"):
+                    continue
+            result[current].append(line_stripped)
+    return {k: v for k, v in result.items() if v}
+
+
 def fact_check_claim(claim: str, context: str = "") -> tuple[str, str]:
     """
     Use Gemini to fact-check a claim. Returns (verdict, explanation).
