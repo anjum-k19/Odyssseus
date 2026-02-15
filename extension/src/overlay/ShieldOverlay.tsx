@@ -1,6 +1,5 @@
 import React, { useState } from "react";
 import type { TextMetrics as TextMetricsType, AriadneResponse } from "../shared/api";
-import { SCORE_CONFIG, type ScoreKey } from "../config/scores";
 
 /** Score 0–100 → "green" | "yellow" | "red" */
 function scoreColor(score: number): "green" | "yellow" | "red" {
@@ -77,49 +76,6 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 10,
     minWidth: 8,
     transition: "width 0.25s ease",
-  },
-  infoIcon: {
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    width: 16,
-    height: 16,
-    borderRadius: "50%",
-    border: "1px solid rgba(212, 175, 55, 0.6)",
-    color: "#d4af37",
-    fontSize: 11,
-    fontWeight: 700,
-    cursor: "help",
-    marginLeft: 6,
-    verticalAlign: "middle",
-  },
-  infoTooltip: {
-    position: "absolute" as const,
-    left: 0,
-    top: "100%",
-    marginTop: 4,
-    padding: "8px 10px",
-    background: "rgba(30, 30, 36, 0.98)",
-    border: "1px solid rgba(212, 175, 55, 0.4)",
-    borderRadius: 8,
-    fontSize: 12,
-    color: "#e0e0e0",
-    maxWidth: 320,
-    zIndex: 2147483647,
-    boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
-  },
-  lowExplanation: {
-    marginTop: 8,
-    padding: "8px 10px",
-    background: "rgba(244, 67, 54, 0.12)",
-    border: "1px solid rgba(244, 67, 54, 0.4)",
-    borderRadius: 8,
-    fontSize: 12,
-    color: "#e57373",
-  },
-  lowExplanationTitle: {
-    fontWeight: 600,
-    marginBottom: 4,
   },
   row: {
     display: "flex",
@@ -204,19 +160,12 @@ export function ShieldOverlay({
       .finally(() => setAriadneLoading(false));
   };
 
-  const scoreItems: { key: ScoreKey; label: string; value: number }[] = metrics
-    ? (["humanity", "integrity", "rhetoric"] as const).map((key) => ({
-        key,
-        label: SCORE_CONFIG[key].label,
-        value: metrics[key],
-      }))
-    : [];
-
-  const [infoOpen, setInfoOpen] = useState<ScoreKey | null>(null);
-  const lowScores = metrics
-    ? (["humanity", "integrity", "rhetoric"] as const).filter(
-        (k) => metrics[k] < 34
-      )
+  const scoreItems: { label: string; value: number }[] = metrics
+    ? [
+        { label: "Humanity", value: metrics.humanity },
+        { label: "Integrity", value: metrics.integrity },
+        { label: "Rhetoric", value: metrics.rhetoric },
+      ]
     : [];
 
   return (
@@ -239,35 +188,13 @@ export function ShieldOverlay({
       {!loading && metrics && (
         <>
           <div style={{ marginBottom: 12 }}>
-            {scoreItems.map(({ key, label, value }) => {
+            {scoreItems.map(({ label, value }) => {
               const band = scoreColor(value);
               const colors = scoreBarColors[band];
-              const config = SCORE_CONFIG[key];
-              const showTooltip = infoOpen === key;
               return (
-                <div
-                  key={key}
-                  style={{ ...styles.scoreBar, position: "relative" as const }}
-                >
+                <div key={label} style={styles.scoreBar}>
                   <span style={{ ...styles.scoreBarLabel, color: colors.text }}>
                     {label}
-                    <span
-                      style={styles.infoIcon}
-                      onMouseEnter={() => setInfoOpen(key)}
-                      onMouseLeave={() => setInfoOpen(null)}
-                      title={config.description}
-                    >
-                      i
-                    </span>
-                    {showTooltip && (
-                      <span
-                        style={styles.infoTooltip}
-                        onMouseEnter={() => setInfoOpen(key)}
-                        onMouseLeave={() => setInfoOpen(null)}
-                      >
-                        {config.description}
-                      </span>
-                    )}
                   </span>
                   <div style={styles.scoreBarTrack}>
                     <div
@@ -285,17 +212,6 @@ export function ShieldOverlay({
               );
             })}
           </div>
-          {lowScores.length > 0 && (
-            <div style={styles.lowExplanation}>
-              <div style={styles.lowExplanationTitle}>Why these scores are low</div>
-              {lowScores.map((key) => (
-                <div key={key} style={{ marginTop: 4 }}>
-                  <strong>{SCORE_CONFIG[key].label}:</strong>{" "}
-                  {SCORE_CONFIG[key].lowExplanation}
-                </div>
-              ))}
-            </div>
-          )}
           {fromCache && (
             <div style={{ ...styles.row, marginTop: 6, fontSize: 11, color: "#666" }}>
               From cache

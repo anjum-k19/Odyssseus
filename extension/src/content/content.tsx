@@ -76,61 +76,6 @@ function renderOverlay(
   );
 }
 
-const LOW_SCORE_THRESHOLD = 34;
-
-function isLowScore(metrics: AnalyzeResponse["text_metrics"]): boolean {
-  return (
-    metrics.humanity < LOW_SCORE_THRESHOLD ||
-    metrics.integrity < LOW_SCORE_THRESHOLD ||
-    metrics.rhetoric < LOW_SCORE_THRESHOLD
-  );
-}
-
-const HIGHLIGHT_STYLE_ID = "odysseus-low-score-styles";
-const CLASS_MEDIA = "odysseus-highlight-media";
-const CLASS_CONTENT = "odysseus-highlight-content";
-
-function ensureHighlightStyles() {
-  if (document.getElementById(HIGHLIGHT_STYLE_ID)) return;
-  const style = document.createElement("style");
-  style.id = HIGHLIGHT_STYLE_ID;
-  style.textContent = `
-    .${CLASS_MEDIA} {
-      outline: 3px solid #f44336 !important;
-      outline-offset: 2px !important;
-      border-radius: 4px;
-    }
-    .${CLASS_CONTENT} {
-      background: rgba(244, 67, 54, 0.08) !important;
-      box-shadow: inset 0 0 0 1px rgba(244, 67, 54, 0.25);
-    }
-  `;
-  (document.head || document.documentElement).appendChild(style);
-}
-
-function applyLowScoreHighlights(metrics: AnalyzeResponse["text_metrics"]) {
-  if (!isLowScore(metrics)) return;
-  ensureHighlightStyles();
-  document.querySelectorAll("img[src], video").forEach((el) => {
-    el.classList.add(CLASS_MEDIA);
-  });
-  const main =
-    document.querySelector("article") ||
-    document.querySelector("main") ||
-    document.querySelector("[role='main']") ||
-    document.body;
-  if (main) main.classList.add(CLASS_CONTENT);
-}
-
-function clearLowScoreHighlights() {
-  document.querySelectorAll(`.${CLASS_MEDIA}`).forEach((el) => {
-    el.classList.remove(CLASS_MEDIA);
-  });
-  document.querySelectorAll(`.${CLASS_CONTENT}`).forEach((el) => {
-    el.classList.remove(CLASS_CONTENT);
-  });
-}
-
 let odysseusRootEl: HTMLDivElement | null = null;
 let odysseusReactRoot: ReturnType<typeof createRoot> | null = null;
 let lastPageUrl: string | null = null;
@@ -139,7 +84,6 @@ let cachedFromCache = false;
 
 function hideOverlay() {
   if (odysseusRootEl) odysseusRootEl.style.display = "none";
-  clearLowScoreHighlights();
 }
 
 function showOverlay() {
@@ -165,7 +109,6 @@ function openAndMaybeAnalyze() {
 
   // Same page and we already have metrics: show cached, no API call
   if (lastPageUrl === url && cachedMetrics !== null) {
-    if (isLowScore(cachedMetrics)) applyLowScoreHighlights(cachedMetrics);
     renderOverlay(odysseusReactRoot, {
       loading: false,
       metrics: cachedMetrics,
@@ -197,7 +140,6 @@ function openAndMaybeAnalyze() {
         cachedMetrics = data.text_metrics;
         cachedFromCache = data.from_cache;
         if (data.neutral_headline) applyHypeFilter(data.neutral_headline);
-        if (isLowScore(data.text_metrics)) applyLowScoreHighlights(data.text_metrics);
         renderOverlay(odysseusReactRoot!, {
           loading: false,
           metrics: data.text_metrics,
