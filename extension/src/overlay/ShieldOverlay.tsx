@@ -220,6 +220,10 @@ interface Props {
   fetchChat?: (message: string) => Promise<string>;
   /** Chorus: alternative perspectives. When provided, shows "Other perspectives" and fetches links. */
   fetchChorus?: (url: string, topicOrSummary: string) => Promise<ChorusLinkItem[]>;
+  /** Override container styles (e.g. for side panel: full width, no fixed position). */
+  containerStyle?: React.CSSProperties;
+  /** Hide the close button (e.g. when used in side panel). */
+  hideCloseButton?: boolean;
 }
 
 export function ShieldOverlay({
@@ -236,6 +240,8 @@ export function ShieldOverlay({
   sessionId,
   fetchChat,
   fetchChorus,
+  containerStyle,
+  hideCloseButton = false,
 }: Props) {
   const [ariadneOpen, setAriadneOpen] = useState(false);
   const [ariadneLoading, setAriadneLoading] = useState(false);
@@ -311,10 +317,10 @@ export function ShieldOverlay({
     : [];
 
   return (
-    <div style={styles.container}>
+    <div style={{ ...styles.container, ...containerStyle }}>
       <div style={styles.header}>
         <div style={styles.title}>Odysseus Shield</div>
-        {onClose && (
+        {!hideCloseButton && onClose && (
           <button
             type="button"
             style={styles.closeBtn}

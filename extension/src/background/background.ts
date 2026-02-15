@@ -7,13 +7,8 @@ chrome.runtime.onInstalled.addListener(() => {
     title: "Odysseus Check",
     contexts: ["selection"],
   });
-});
-
-// Open overlay and trigger analysis only when user clicks the extension icon (saves Gemini credits).
-chrome.action.onClicked.addListener((tab) => {
-  if (tab?.id) {
-    chrome.tabs.sendMessage(tab.id, { type: "SHOW_OVERLAY" }).catch(() => {});
-  }
+  // Open side panel when user clicks the extension icon (unobstructive, like Chrome's Gemini).
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
@@ -21,9 +16,78 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   chrome.tabs.sendMessage(tab.id, { type: "LITMUS_CHECK", claim: info.selectionText });
 });
 
-// Proxy API calls from content script so fetch runs in extension context (can reach localhost).
+// Proxy API calls and serve side panel: get page data from active tab's content script.
 chrome.runtime.onMessage.addListener(
   (msg: { type: string; payload?: unknown }, _sender, sendResponse) => {
+    if (msg.type === "GET_PAGE_DATA") {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const tabId = tabs[0]?.id;
+        if (!tabId) {
+          sendResponse({ ok: false, error: "No active tab" });
+          return;
+        }
+        function tryGetPageData() {
+          chrome.tabs.sendMessage(tabId, { type: "GET_PAGE_DATA" }, (data) => {
+            if (chrome.runtime.lastError) {
+              const errMsg = chrome.runtime.lastError.message || "";
+              // Content script not loaded: use inline extraction (no Readability, but works on all tabs)
+              if (errMsg.includes("Receiving end does not exist") || errMsg.includes("Could not establish connection")) {
+                chrome.scripting.executeScript(
+                  {
+                    target: { tabId },
+                    func: () => {
+                      const body = document.body;
+                      const text = body?.innerText ? body.innerText.slice(0, 50000) : "";
+                      const media: string[] = [];
+                      document.querySelectorAll("img[src], video[src], source[src]").forEach((el: Element) => {
+                        const src = (el as HTMLImageElement).src;
+                        if (src) media.push(src);
+                      });
+                      document.querySelectorAll("iframe[src]").forEach((el: Element) => {
+                        const src = (el as HTMLIFrameElement).src;
+                        if (src) media.push(src);
+                      });
+                      const linkSet = new Set<string>();
+                      document.querySelectorAll("a[href]").forEach((el: Element) => {
+                        const href = (el as HTMLAnchorElement).href;
+                        if (href && href.startsWith("http")) linkSet.add(href);
+                      });
+                      return {
+                        url: location.href,
+                        text,
+                        media,
+                        links: Array.from(linkSet),
+                      };
+                    },
+                  },
+                  (results) => {
+                    if (chrome.runtime.lastError) {
+                      sendResponse({
+                        ok: false,
+                        error: "Cannot read this page. Try refreshing the tab and opening Odysseus again.",
+                      });
+                      return;
+                    }
+                    const data = results?.[0]?.result;
+                    if (data && typeof data === "object" && "url" in data) {
+                      sendResponse({ ok: true, data });
+                    } else {
+                      sendResponse({ ok: false, error: "Page could not be read" });
+                    }
+                  }
+                );
+                return;
+              }
+              sendResponse({ ok: false, error: errMsg || "Page could not be read" });
+              return;
+            }
+            sendResponse({ ok: true, data });
+          });
+        }
+        tryGetPageData();
+      });
+      return true; // keep channel open for async sendResponse
+    }
     if (msg.type === "ANALYZE_PAGE" && msg.payload) {
       const { url, text, media } = msg.payload as { url: string; text: string; media: string[] };
       fetch(`${API_BASE}/api/analyze`, {

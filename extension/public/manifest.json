@@ -3,11 +3,10 @@
   "name": "Odysseus",
   "version": "0.1.0",
   "description": "Reality Layer: real-time scores and fact-checking for the web.",
-  "permissions": ["activeTab", "scripting", "storage", "contextMenus"],
+  "permissions": ["activeTab", "scripting", "storage", "contextMenus", "sidePanel"],
   "host_permissions": ["http://localhost:8000/*", "<all_urls>"],
   "background": { "service_worker": "background.js" },
   "action": {},
-  "content_scripts": [
-    { "matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_idle" }
-  ]
+  "side_panel": { "default_path": "sidepanel.html" },
+  "content_scripts": [{ "matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_idle" }]
 }

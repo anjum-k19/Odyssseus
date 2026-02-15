@@ -395,6 +395,15 @@ function initContentScript() {
         sendResponse({ ok: true });
         return true;
       }
+      if (msg.type === "GET_PAGE_DATA") {
+        sendResponse({
+          url: location.href,
+          text: extractPageText(),
+          media: extractMedia(),
+          links: extractLinks(),
+        });
+        return false; // sync response, channel can close
+      }
       return false;
     }
   );

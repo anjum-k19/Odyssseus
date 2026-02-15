@@ -31,6 +31,7 @@ def _text_hash(text: str) -> str:
 def analyze(req: AnalyzeRequest):
     """Normalize URL; return stored metrics if content matches; else run Gemini, persist, return."""
     logger.info("analyze received url=%r text_len=%s media_count=%s", req.url[:120] if req.url else "", len(req.text or ""), len(req.media or []))
+    logger.info("analyze received text=%r", req.text)
     normalized = normalize_url(req.url)
     if not normalized:
         logger.warning("analyze invalid URL -> 400")
