@@ -40,77 +40,203 @@ function extractLinks(): string[] {
   return urls;
 }
 
-function main() {
-  const rootEl = document.createElement("div");
-  rootEl.id = "odysseus-root";
-  document.body?.appendChild(rootEl);
-  const root = createRoot(rootEl);
+const fetchAriadne = (pageUrl: string, linkList: string[]) =>
+  new Promise<AriadneResponse>((resolve, reject) => {
+    chrome.runtime.sendMessage(
+      { type: "ARIADNE_FETCH", payload: { url: pageUrl, links: linkList } },
+      (res: { ok: boolean; data?: AriadneResponse; error?: string } | undefined) => {
+        if (res?.ok && res.data) resolve(res.data as AriadneResponse);
+        else reject(new Error(res?.error || "Ariadne failed"));
+      }
+    );
+  });
 
+function renderOverlay(
+  root: ReturnType<typeof createRoot>,
+  opts: {
+    loading: boolean;
+    metrics: React.ComponentProps<typeof ShieldOverlay>["metrics"];
+    fromCache?: boolean;
+    pageUrl: string;
+    links: string[];
+    onClose: () => void;
+  }
+) {
+  root.render(
+    <ShieldOverlay
+      loading={opts.loading}
+      metrics={opts.metrics}
+      fromCache={opts.fromCache}
+      pageUrl={opts.pageUrl}
+      links={opts.links}
+      onAriadneLoad={() => {}}
+      onClose={opts.onClose}
+      fetchAriadne={fetchAriadne}
+    />
+  );
+}
+
+const LOW_SCORE_THRESHOLD = 34;
+
+function isLowScore(metrics: AnalyzeResponse["text_metrics"]): boolean {
+  return (
+    metrics.humanity < LOW_SCORE_THRESHOLD ||
+    metrics.integrity < LOW_SCORE_THRESHOLD ||
+    metrics.rhetoric < LOW_SCORE_THRESHOLD
+  );
+}
+
+const HIGHLIGHT_STYLE_ID = "odysseus-low-score-styles";
+const CLASS_MEDIA = "odysseus-highlight-media";
+const CLASS_CONTENT = "odysseus-highlight-content";
+
+function ensureHighlightStyles() {
+  if (document.getElementById(HIGHLIGHT_STYLE_ID)) return;
+  const style = document.createElement("style");
+  style.id = HIGHLIGHT_STYLE_ID;
+  style.textContent = `
+    .${CLASS_MEDIA} {
+      outline: 3px solid #f44336 !important;
+      outline-offset: 2px !important;
+      border-radius: 4px;
+    }
+    .${CLASS_CONTENT} {
+      background: rgba(244, 67, 54, 0.08) !important;
+      box-shadow: inset 0 0 0 1px rgba(244, 67, 54, 0.25);
+    }
+  `;
+  (document.head || document.documentElement).appendChild(style);
+}
+
+function applyLowScoreHighlights(metrics: AnalyzeResponse["text_metrics"]) {
+  if (!isLowScore(metrics)) return;
+  ensureHighlightStyles();
+  document.querySelectorAll("img[src], video").forEach((el) => {
+    el.classList.add(CLASS_MEDIA);
+  });
+  const main =
+    document.querySelector("article") ||
+    document.querySelector("main") ||
+    document.querySelector("[role='main']") ||
+    document.body;
+  if (main) main.classList.add(CLASS_CONTENT);
+}
+
+function clearLowScoreHighlights() {
+  document.querySelectorAll(`.${CLASS_MEDIA}`).forEach((el) => {
+    el.classList.remove(CLASS_MEDIA);
+  });
+  document.querySelectorAll(`.${CLASS_CONTENT}`).forEach((el) => {
+    el.classList.remove(CLASS_CONTENT);
+  });
+}
+
+let odysseusRootEl: HTMLDivElement | null = null;
+let odysseusReactRoot: ReturnType<typeof createRoot> | null = null;
+let lastPageUrl: string | null = null;
+let cachedMetrics: AnalyzeResponse["text_metrics"] | null = null;
+let cachedFromCache = false;
+
+function hideOverlay() {
+  if (odysseusRootEl) odysseusRootEl.style.display = "none";
+  clearLowScoreHighlights();
+}
+
+function showOverlay() {
+  if (odysseusRootEl) odysseusRootEl.style.display = "block";
+}
+
+function openAndMaybeAnalyze() {
   const url = location.href;
   const text = extractPageText();
   const media = extractMedia();
   const links = extractLinks();
 
-  const fetchAriadne = (pageUrl: string, linkList: string[]) =>
-    new Promise<AriadneResponse>((resolve, reject) => {
-      chrome.runtime.sendMessage(
-        { type: "ARIADNE_FETCH", payload: { url: pageUrl, links: linkList } },
-        (res: { ok: boolean; data?: AriadneResponse; error?: string } | undefined) => {
-          if (res?.ok && res.data) resolve(res.data as AriadneResponse);
-          else reject(new Error(res?.error || "Ariadne failed"));
-        }
-      );
+  if (!odysseusRootEl || !odysseusReactRoot) {
+    odysseusRootEl = document.createElement("div");
+    odysseusRootEl.id = "odysseus-root";
+    document.body?.appendChild(odysseusRootEl);
+    odysseusReactRoot = createRoot(odysseusRootEl);
+  }
+
+  const onClose = () => hideOverlay();
+
+  showOverlay();
+
+  // Same page and we already have metrics: show cached, no API call
+  if (lastPageUrl === url && cachedMetrics !== null) {
+    if (isLowScore(cachedMetrics)) applyLowScoreHighlights(cachedMetrics);
+    renderOverlay(odysseusReactRoot, {
+      loading: false,
+      metrics: cachedMetrics,
+      fromCache: cachedFromCache,
+      pageUrl: url,
+      links,
+      onClose,
     });
+    return;
+  }
 
-  root.render(
-    <ShieldOverlay
-      loading={true}
-      metrics={null}
-      pageUrl={url}
-      links={links}
-      onAriadneLoad={() => {}}
-      fetchAriadne={fetchAriadne}
-    />
-  );
+  lastPageUrl = url;
+  cachedMetrics = null;
+  cachedFromCache = false;
 
-  // Use background script to fetch (content script cannot reach localhost from page origin).
+  renderOverlay(odysseusReactRoot, {
+    loading: true,
+    metrics: null,
+    pageUrl: url,
+    links,
+    onClose,
+  });
+
   chrome.runtime.sendMessage(
     { type: "ANALYZE_PAGE", payload: { url, text, media } },
     (res: { ok: boolean; data?: AnalyzeResponse; error?: string } | undefined) => {
       if (res?.ok && res.data) {
         const data = res.data as AnalyzeResponse;
+        cachedMetrics = data.text_metrics;
+        cachedFromCache = data.from_cache;
         if (data.neutral_headline) applyHypeFilter(data.neutral_headline);
-        root.render(
-          <ShieldOverlay
-            loading={false}
-            metrics={data.text_metrics}
-            fromCache={data.from_cache}
-            pageUrl={url}
-            links={links}
-            onAriadneLoad={() => {}}
-            fetchAriadne={fetchAriadne}
-          />
-        );
+        if (isLowScore(data.text_metrics)) applyLowScoreHighlights(data.text_metrics);
+        renderOverlay(odysseusReactRoot!, {
+          loading: false,
+          metrics: data.text_metrics,
+          fromCache: data.from_cache,
+          pageUrl: url,
+          links,
+          onClose,
+        });
       } else {
-        root.render(
-          <ShieldOverlay
-            loading={false}
-            metrics={null}
-            pageUrl={url}
-            links={links}
-            onAriadneLoad={() => {}}
-            fetchAriadne={fetchAriadne}
-          />
-        );
+        renderOverlay(odysseusReactRoot!, {
+          loading: false,
+          metrics: null,
+          pageUrl: url,
+          links,
+          onClose,
+        });
       }
     }
   );
 }
 
+function initContentScript() {
+  // Only listen for messages; do not open overlay or call API until user clicks extension icon.
+  chrome.runtime.onMessage.addListener(
+    (msg: { type?: string }, _sender, sendResponse) => {
+      if (msg.type === "SHOW_OVERLAY") {
+        openAndMaybeAnalyze();
+        sendResponse({ ok: true });
+        return true;
+      }
+      return false;
+    }
+  );
+}
+
 if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", main);
+  document.addEventListener("DOMContentLoaded", initContentScript);
 } else {
-  main();
+  initContentScript();
 }
 
 // Litmus: context menu "Odysseus Check" sends message; show tooltip with verdict.

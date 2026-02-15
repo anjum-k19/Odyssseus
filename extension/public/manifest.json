@@ -5,14 +5,9 @@
   "description": "Reality Layer: real-time scores and fact-checking for the web.",
   "permissions": ["activeTab", "scripting", "storage", "contextMenus"],
   "host_permissions": ["http://localhost:8000/*", "<all_urls>"],
-  "background": {
-    "service_worker": "background.js"
-  },
+  "background": { "service_worker": "background.js" },
+  "action": { "default_icon": { "16": "extension-display.ico", "32": "extension-display.ico", "48": "extension-display.png" }, "default_title": "Odysseus" },
   "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
-      "run_at": "document_idle"
-    }
+    { "matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_idle" }
   ]
 }

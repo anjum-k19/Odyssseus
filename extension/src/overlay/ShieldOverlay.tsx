@@ -1,29 +1,125 @@
 import React, { useState } from "react";
 import type { TextMetrics as TextMetricsType, AriadneResponse } from "../shared/api";
+import { SCORE_CONFIG, type ScoreKey } from "../config/scores";
+
+/** Score 0–100 → "green" | "yellow" | "red" */
+function scoreColor(score: number): "green" | "yellow" | "red" {
+  if (score >= 67) return "green";
+  if (score >= 34) return "yellow";
+  return "red";
+}
+
+const scoreBarColors = {
+  green: { bg: "rgba(76, 175, 80, 0.35)", border: "#4caf50", text: "#81c784" },
+  yellow: { bg: "rgba(255, 193, 7, 0.3)", border: "#ffc107", text: "#ffca28" },
+  red: { bg: "rgba(244, 67, 54, 0.35)", border: "#f44336", text: "#e57373" },
+};
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
     position: "fixed",
-    top: 12,
-    right: 12,
+    top: 16,
+    right: 16,
     zIndex: 2147483647,
     fontFamily: "system-ui, sans-serif",
-    fontSize: 12,
+    fontSize: 14,
     background: "rgba(20, 20, 24, 0.95)",
     color: "#e8e6e3",
-    padding: "10px 14px",
-    borderRadius: 8,
-    boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
-    border: "1px solid rgba(212, 175, 55, 0.4)",
-    minWidth: 160,
-    maxWidth: 320,
-    maxHeight: "80vh",
+    padding: "16px 20px",
+    borderRadius: 12,
+    boxShadow: "0 4px 16px rgba(0,0,0,0.45)",
+    border: "1px solid rgba(212, 175, 55, 0.45)",
+    minWidth: 280,
+    maxWidth: 420,
+    maxHeight: "85vh",
     overflow: "auto",
   },
+  header: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    marginBottom: 12,
+  },
   title: {
-    marginBottom: 8,
-    fontWeight: 600,
+    marginBottom: 0,
+    fontWeight: 700,
+    fontSize: 16,
     color: "#d4af37",
+  },
+  closeBtn: {
+    background: "transparent",
+    border: "none",
+    color: "#a0a0a0",
+    cursor: "pointer",
+    fontSize: 18,
+    lineHeight: 1,
+    padding: "0 4px",
+    marginTop: -2,
+  },
+  scoreBar: {
+    marginBottom: 14,
+  },
+  scoreBarLabel: {
+    display: "block",
+    color: "#c0c0c0",
+    fontSize: 13,
+    marginBottom: 4,
+    fontWeight: 600,
+  },
+  scoreBarTrack: {
+    height: 20,
+    borderRadius: 10,
+    background: "rgba(255,255,255,0.08)",
+    overflow: "hidden",
+  },
+  scoreBarFill: {
+    height: "100%",
+    borderRadius: 10,
+    minWidth: 8,
+    transition: "width 0.25s ease",
+  },
+  infoIcon: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: 16,
+    height: 16,
+    borderRadius: "50%",
+    border: "1px solid rgba(212, 175, 55, 0.6)",
+    color: "#d4af37",
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: "help",
+    marginLeft: 6,
+    verticalAlign: "middle",
+  },
+  infoTooltip: {
+    position: "absolute" as const,
+    left: 0,
+    top: "100%",
+    marginTop: 4,
+    padding: "8px 10px",
+    background: "rgba(30, 30, 36, 0.98)",
+    border: "1px solid rgba(212, 175, 55, 0.4)",
+    borderRadius: 8,
+    fontSize: 12,
+    color: "#e0e0e0",
+    maxWidth: 320,
+    zIndex: 2147483647,
+    boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
+  },
+  lowExplanation: {
+    marginTop: 8,
+    padding: "8px 10px",
+    background: "rgba(244, 67, 54, 0.12)",
+    border: "1px solid rgba(244, 67, 54, 0.4)",
+    borderRadius: 8,
+    fontSize: 12,
+    color: "#e57373",
+  },
+  lowExplanationTitle: {
+    fontWeight: 600,
+    marginBottom: 4,
   },
   row: {
     display: "flex",
@@ -31,33 +127,33 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 12,
     marginTop: 4,
   },
-  label: { color: "#a0a0a0" },
-  value: { fontWeight: 500 },
-  loading: { color: "#888" },
+  label: { color: "#a0a0a0", fontSize: 13 },
+  value: { fontWeight: 600, fontSize: 14 },
+  loading: { color: "#888", fontSize: 14 },
   linkBtn: {
-    marginTop: 8,
-    padding: "4px 8px",
+    marginTop: 10,
+    padding: "6px 12px",
     background: "rgba(212, 175, 55, 0.2)",
     border: "1px solid rgba(212, 175, 55, 0.5)",
-    borderRadius: 4,
+    borderRadius: 6,
     color: "#d4af37",
     cursor: "pointer",
-    fontSize: 11,
+    fontSize: 12,
   },
   ariadneSection: {
-    marginTop: 10,
-    paddingTop: 8,
+    marginTop: 12,
+    paddingTop: 10,
     borderTop: "1px solid rgba(255,255,255,0.1)",
   },
   ariadneNode: {
     marginTop: 4,
-    fontSize: 11,
+    fontSize: 12,
     color: "#a0a0a0",
     wordBreak: "break-all" as const,
   },
   ariadneAlert: {
     marginTop: 4,
-    fontSize: 11,
+    fontSize: 12,
     color: "#b55",
   },
 };
@@ -69,6 +165,7 @@ interface Props {
   pageUrl?: string;
   links?: string[];
   onAriadneLoad?: () => void;
+  onClose?: () => void;
   /** Fetches Ariadne graph via background script (required for same-origin). */
   fetchAriadne?: (url: string, links: string[]) => Promise<AriadneResponse>;
 }
@@ -80,6 +177,7 @@ export function ShieldOverlay({
   pageUrl = "",
   links = [],
   onAriadneLoad,
+  onClose,
   fetchAriadne,
 }: Props) {
   const [ariadneOpen, setAriadneOpen] = useState(false);
@@ -106,26 +204,100 @@ export function ShieldOverlay({
       .finally(() => setAriadneLoading(false));
   };
 
+  const scoreItems: { key: ScoreKey; label: string; value: number }[] = metrics
+    ? (["humanity", "integrity", "rhetoric"] as const).map((key) => ({
+        key,
+        label: SCORE_CONFIG[key].label,
+        value: metrics[key],
+      }))
+    : [];
+
+  const [infoOpen, setInfoOpen] = useState<ScoreKey | null>(null);
+  const lowScores = metrics
+    ? (["humanity", "integrity", "rhetoric"] as const).filter(
+        (k) => metrics[k] < 34
+      )
+    : [];
+
   return (
     <div style={styles.container}>
-      <div style={styles.title}>Odysseus Shield</div>
+      <div style={styles.header}>
+        <div style={styles.title}>Odysseus Shield</div>
+        {onClose && (
+          <button
+            type="button"
+            style={styles.closeBtn}
+            onClick={onClose}
+            title="Close"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        )}
+      </div>
       {loading && <div style={styles.loading}>Analyzing…</div>}
       {!loading && metrics && (
         <>
-          <div style={styles.row}>
-            <span style={styles.label}>Humanity</span>
-            <span style={styles.value}>{Math.round(metrics.humanity)}</span>
+          <div style={{ marginBottom: 12 }}>
+            {scoreItems.map(({ key, label, value }) => {
+              const band = scoreColor(value);
+              const colors = scoreBarColors[band];
+              const config = SCORE_CONFIG[key];
+              const showTooltip = infoOpen === key;
+              return (
+                <div
+                  key={key}
+                  style={{ ...styles.scoreBar, position: "relative" as const }}
+                >
+                  <span style={{ ...styles.scoreBarLabel, color: colors.text }}>
+                    {label}
+                    <span
+                      style={styles.infoIcon}
+                      onMouseEnter={() => setInfoOpen(key)}
+                      onMouseLeave={() => setInfoOpen(null)}
+                      title={config.description}
+                    >
+                      i
+                    </span>
+                    {showTooltip && (
+                      <span
+                        style={styles.infoTooltip}
+                        onMouseEnter={() => setInfoOpen(key)}
+                        onMouseLeave={() => setInfoOpen(null)}
+                      >
+                        {config.description}
+                      </span>
+                    )}
+                  </span>
+                  <div style={styles.scoreBarTrack}>
+                    <div
+                      style={{
+                        ...styles.scoreBarFill,
+                        width: `${Math.min(100, Math.max(0, value))}%`,
+                        background: colors.border,
+                      }}
+                    />
+                  </div>
+                  <span style={{ ...styles.value, color: colors.text, marginTop: 2, display: "inline-block" }}>
+                    {Math.round(value)}
+                  </span>
+                </div>
+              );
+            })}
           </div>
-          <div style={styles.row}>
-            <span style={styles.label}>Integrity</span>
-            <span style={styles.value}>{Math.round(metrics.integrity)}</span>
-          </div>
-          <div style={styles.row}>
-            <span style={styles.label}>Rhetoric</span>
-            <span style={styles.value}>{Math.round(metrics.rhetoric)}</span>
-          </div>
+          {lowScores.length > 0 && (
+            <div style={styles.lowExplanation}>
+              <div style={styles.lowExplanationTitle}>Why these scores are low</div>
+              {lowScores.map((key) => (
+                <div key={key} style={{ marginTop: 4 }}>
+                  <strong>{SCORE_CONFIG[key].label}:</strong>{" "}
+                  {SCORE_CONFIG[key].lowExplanation}
+                </div>
+              ))}
+            </div>
+          )}
           {fromCache && (
-            <div style={{ ...styles.row, marginTop: 6, fontSize: 10, color: "#666" }}>
+            <div style={{ ...styles.row, marginTop: 6, fontSize: 11, color: "#666" }}>
               From cache
             </div>
           )}

@@ -9,6 +9,13 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
+// Open overlay and trigger analysis only when user clicks the extension icon (saves Gemini credits).
+chrome.action.onClicked.addListener((tab) => {
+  if (tab?.id) {
+    chrome.tabs.sendMessage(tab.id, { type: "SHOW_OVERLAY" }).catch(() => {});
+  }
+});
+
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId !== "odysseus-check" || !tab?.id || !info.selectionText) return;
   chrome.tabs.sendMessage(tab.id, { type: "LITMUS_CHECK", claim: info.selectionText });
